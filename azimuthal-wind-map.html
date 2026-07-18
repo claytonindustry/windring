@@ -1,0 +1,560 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Azimuthal Wind Chart</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.8.5/d3.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/topojson-client/3.1.0/topojson-client.min.js"></script>
+<style>
+  :root{
+    --abyss:#0a1420;
+    --abyss-2:#0f1e2e;
+    --chart-line:#22384c;
+    --brass:#c9a35c;
+    --brass-dim:#8a744a;
+    --paper:#e9e3d3;
+    --paper-dim:#9aa5ab;
+    --calm:#4fc3c9;
+    --breeze:#7ec850;
+    --fresh:#e8c547;
+    --strong:#e8843a;
+    --gale:#e8544e;
+    --live:#7ec850;
+    --sim:#c9a35c;
+  }
+  *{box-sizing:border-box;}
+  html,body{
+    margin:0; height:100%; background:var(--abyss);
+    font-family: ui-monospace, "SF Mono", "JetBrains Mono", Consolas, monospace;
+    color:var(--paper); overflow:hidden;
+  }
+  #stage{position:relative; width:100vw; height:100vh;}
+  canvas{position:absolute; top:0; left:0;}
+  #ui{ position:absolute; z-index:5; pointer-events:none; inset:0; }
+  .panel{
+    pointer-events:auto;
+    background: linear-gradient(180deg, rgba(15,30,46,0.92), rgba(10,20,32,0.92));
+    border:1px solid var(--chart-line);
+    box-shadow: 0 0 0 1px rgba(201,163,92,0.08), 0 8px 24px rgba(0,0,0,0.5);
+    backdrop-filter: blur(2px);
+  }
+  #title{ position:absolute; top:18px; left:18px; padding:14px 18px; max-width: 320px; }
+  #title h1{
+    font-family: Georgia, "Iowan Old Style", serif;
+    font-size:19px; letter-spacing:0.02em; margin:0 0 2px 0; color:var(--paper);
+    font-style:italic; font-weight:600;
+  }
+  #title .sub{ font-size:10.5px; letter-spacing:0.06em; color:var(--brass); text-transform:uppercase; }
+  #title p{ font-size:11px; line-height:1.5; color:var(--paper-dim); margin:10px 0 0 0; }
+  #title .center-readout{ margin-top:10px; padding-top:10px; border-top:1px solid var(--chart-line); font-size:11.5px; color:var(--brass); }
+  #title .center-readout span{color:var(--paper-dim); font-size:10px;}
+  #status{ display:flex; align-items:center; gap:6px; margin-top:8px; font-size:10px; letter-spacing:0.04em; }
+  #status .dot{ width:6px; height:6px; border-radius:50%; background:var(--sim); flex:none; }
+  #status.live .dot{ background:var(--live); box-shadow:0 0 6px var(--live); }
+  #status .lbl{ color:var(--paper-dim); }
+
+  #controls{ position:absolute; top:18px; right:18px; padding:10px; display:flex; gap:6px; flex-wrap:wrap; justify-content:flex-end; max-width:260px; }
+  .btn{
+    pointer-events:auto;
+    background:var(--abyss-2); border:1px solid var(--chart-line); color:var(--paper-dim);
+    font-family:inherit; font-size:10px; letter-spacing:0.05em; text-transform:uppercase;
+    padding:8px 11px; cursor:pointer; transition: all 0.15s ease;
+  }
+  .btn:hover{ color:var(--brass); border-color:var(--brass-dim); }
+  .btn.active{ color:var(--abyss); background:var(--brass); border-color:var(--brass); }
+  .btn:disabled{ opacity:0.4; cursor:default; }
+
+  #legend{ position:absolute; bottom:18px; right:18px; padding:14px 16px; width:220px; }
+  #legend .lt{ font-size:10px; letter-spacing:0.08em; text-transform:uppercase; color:var(--brass); margin-bottom:8px;}
+  #legend .bar{ height:8px; width:100%; border-radius:1px; background: linear-gradient(90deg, var(--calm), var(--breeze), var(--fresh), var(--strong), var(--gale)); }
+  #legend .ticks{ display:flex; justify-content:space-between; font-size:9.5px; color:var(--paper-dim); margin-top:4px;}
+
+  #hint{ position:absolute; bottom:18px; left:18px; padding:9px 14px; font-size:10px; letter-spacing:0.03em; color:var(--paper-dim); max-width:280px; }
+  #hint b{color:var(--brass); font-weight:normal;}
+
+  #loading{
+    position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
+    color:var(--brass-dim); font-size:11px; letter-spacing:0.1em; text-transform:uppercase; z-index:10;
+    background:var(--abyss);
+  }
+</style>
+</head>
+<body>
+<div id="stage">
+  <canvas id="map"></canvas>
+  <canvas id="wind"></canvas>
+  <div id="loading">Plotting coastline…</div>
+  <div id="ui">
+    <div id="title" class="panel">
+      <div class="sub">Global Circulation</div>
+      <h1>Azimuthal Wind Chart</h1>
+      <p>Bearing and distance from the center point are true to scale. Click the chart to re-center · scroll to zoom.</p>
+      <div class="center-readout"><span>Center </span><span id="centerText">—</span></div>
+      <div id="status"><div class="dot"></div><span class="lbl" id="statusText">Loading wind data…</span></div>
+    </div>
+    <div id="controls">
+      <button class="btn" id="btnHome">San Pedro</button>
+      <button class="btn" id="btnPole">N. Pole</button>
+      <button class="btn" id="btnFit">Fit World</button>
+      <button class="btn" id="btnRefresh">Refresh Wind</button>
+      <button class="btn active" id="btnPause">Pause</button>
+    </div>
+    <div id="legend" class="panel">
+      <div class="lt">Wind speed (knots)</div>
+      <div class="bar"></div>
+      <div class="ticks"><span>0</span><span>10</span><span>20</span><span>30</span><span>40+</span></div>
+    </div>
+    <div id="hint" class="panel">Rings every <b>5,000&nbsp;km</b> from center · North-pole view puts the South Pole at the outer rim</div>
+  </div>
+</div>
+
+<script>
+(function(){
+  const stage = document.getElementById('stage');
+  const mapCanvas = document.getElementById('map');
+  const windCanvas = document.getElementById('wind');
+  const mapCtx = mapCanvas.getContext('2d');
+  const windCtx = windCanvas.getContext('2d');
+  const loading = document.getElementById('loading');
+  const centerText = document.getElementById('centerText');
+  const statusEl = document.getElementById('status');
+  const statusText = document.getElementById('statusText');
+  const btnRefresh = document.getElementById('btnRefresh');
+
+  let W, H, DPR;
+  let projection, path;
+  let land = null;
+  let graticule = d3.geoGraticule10();
+  const EARTH_R_KM = 6371;
+  const HALF_CIRCUM_KM = Math.PI * EARTH_R_KM;
+
+  let centerLon = 0, centerLat = 90; // default: North Pole, South Pole at the rim
+  let paused = false;
+  let fitScale = null;
+  let currentScale = null;
+  let translate = [0,0];
+
+  function fmtCoord(lon, lat){
+    const ns = lat >= 0 ? 'N' : 'S';
+    const ew = lon >= 0 ? 'E' : 'W';
+    return Math.abs(lat).toFixed(1) + '°' + ns + ', ' + Math.abs(lon).toFixed(1) + '°' + ew;
+  }
+
+  function setCenter(lon, lat, keepZoom){
+    centerLon = lon; centerLat = lat;
+    centerText.textContent = fmtCoord(lon, lat);
+    translate = [W/2, H/2];
+    if(!keepZoom) currentScale = fitScale;
+    buildProjection();
+    drawBase();
+    recomputeParticleScreens(true);
+  }
+
+  function resize(){
+    DPR = Math.min(window.devicePixelRatio || 1, 2);
+    W = stage.clientWidth; H = stage.clientHeight;
+    [mapCanvas, windCanvas].forEach(c=>{
+      c.width = W*DPR; c.height = H*DPR;
+      c.style.width = W+'px'; c.style.height = H+'px';
+    });
+    mapCtx.setTransform(DPR,0,0,DPR,0,0);
+    windCtx.setTransform(DPR,0,0,DPR,0,0);
+    fitScale = Math.min(W,H)*0.94/2/Math.PI;
+    if(currentScale===null) currentScale = fitScale;
+    if(translate[0]===0 && translate[1]===0) translate = [W/2,H/2];
+    buildProjection();
+    drawBase();
+  }
+
+  function buildProjection(){
+    projection = d3.geoAzimuthalEquidistant()
+      .rotate([-centerLon, -centerLat])
+      .clipAngle(180 - 1e-3)
+      .translate(translate)
+      .scale(currentScale);
+    path = d3.geoPath(projection, mapCtx);
+  }
+
+  const clipRadius = () => currentScale * Math.PI;
+
+  function drawBase(){
+    mapCtx.clearRect(0,0,W,H);
+    const cx = translate[0], cy = translate[1], R = clipRadius();
+
+    mapCtx.beginPath();
+    mapCtx.arc(cx, cy, R, 0, Math.PI*2);
+    const grad = mapCtx.createRadialGradient(cx,cy,0,cx,cy,R);
+    grad.addColorStop(0, '#0d2032');
+    grad.addColorStop(1, '#081420');
+    mapCtx.fillStyle = grad;
+    mapCtx.fill();
+
+    mapCtx.save();
+    mapCtx.beginPath(); mapCtx.arc(cx,cy,R,0,Math.PI*2); mapCtx.clip();
+    mapCtx.lineWidth = 0.6;
+    mapCtx.strokeStyle = 'rgba(120,150,170,0.18)';
+    mapCtx.beginPath(); path(graticule); mapCtx.stroke();
+
+    const kmPerPixel = HALF_CIRCUM_KM / R;
+    mapCtx.strokeStyle = 'rgba(201,163,92,0.28)';
+    mapCtx.lineWidth = 0.7;
+    mapCtx.font = '9.5px ui-monospace, monospace';
+    mapCtx.fillStyle = 'rgba(201,163,92,0.55)';
+    for(let km=5000; km<HALF_CIRCUM_KM; km+=5000){
+      const r = km/kmPerPixel;
+      mapCtx.beginPath(); mapCtx.arc(cx,cy,r,0,Math.PI*2); mapCtx.stroke();
+      mapCtx.fillText(km.toLocaleString()+' km', cx+4, cy-r+11);
+    }
+
+    if(land){
+      mapCtx.beginPath(); path(land);
+      mapCtx.fillStyle = 'rgba(30,42,34,0.9)';
+      mapCtx.fill();
+      mapCtx.lineWidth = 0.8;
+      mapCtx.strokeStyle = 'rgba(120,140,120,0.5)';
+      mapCtx.stroke();
+    }
+    mapCtx.restore();
+
+    mapCtx.beginPath(); mapCtx.arc(cx,cy,R,0,Math.PI*2);
+    mapCtx.strokeStyle = '#c9a35c';
+    mapCtx.lineWidth = 1.4;
+    mapCtx.stroke();
+
+    const dirs = [[0,'N'],[45,'NE'],[90,'E'],[135,'SE'],[180,'S'],[225,'SW'],[270,'W'],[315,'NW']];
+    mapCtx.font = '10px ui-monospace, monospace';
+    mapCtx.fillStyle = '#c9a35c';
+    mapCtx.textAlign = 'center'; mapCtx.textBaseline='middle';
+    for(const [deg,label] of dirs){
+      const rad = (deg-90)*Math.PI/180;
+      mapCtx.fillText(label, cx + Math.cos(rad)*(R+13), cy + Math.sin(rad)*(R+13));
+    }
+    for(let deg=0; deg<360; deg+=10){
+      const rad = (deg-90)*Math.PI/180;
+      const inner = (deg%30===0) ? R-9 : R-4;
+      mapCtx.beginPath();
+      mapCtx.moveTo(cx+Math.cos(rad)*inner, cy+Math.sin(rad)*inner);
+      mapCtx.lineTo(cx+Math.cos(rad)*R, cy+Math.sin(rad)*R);
+      mapCtx.strokeStyle = 'rgba(201,163,92,0.6)';
+      mapCtx.lineWidth = deg%30===0 ? 1.1 : 0.6;
+      mapCtx.stroke();
+    }
+
+    mapCtx.beginPath(); mapCtx.arc(cx,cy,3.5,0,Math.PI*2);
+    mapCtx.fillStyle = '#e8544e'; mapCtx.fill();
+    mapCtx.beginPath(); mapCtx.arc(cx,cy,7,0,Math.PI*2);
+    mapCtx.strokeStyle = '#e8544e'; mapCtx.lineWidth=1; mapCtx.stroke();
+  }
+
+  function smoothstep(e0,e1,x){ const t=Math.min(1,Math.max(0,(x-e0)/(e1-e0))); return t*t*(3-2*t); }
+  function lerp(a,b,t){ return a+(b-a)*t; }
+
+  function bandWind(lat){
+    const a = Math.abs(lat);
+    const bands = [ {c:-1.0,m:-0.35}, {c:1.0,m:0.28}, {c:-0.55,m:-0.18} ];
+    let zonal, merid;
+    if(a<25){ zonal=bands[0].c; merid=bands[0].m; }
+    else if(a<35){ const t=smoothstep(25,35,a); zonal=lerp(bands[0].c,bands[1].c,t); merid=lerp(bands[0].m,bands[1].m,t); }
+    else if(a<55){ zonal=bands[1].c; merid=bands[1].m; }
+    else if(a<65){ const t=smoothstep(55,65,a); zonal=lerp(bands[1].c,bands[2].c,t); merid=lerp(bands[1].m,bands[2].m,t); }
+    else { zonal=bands[2].c; merid=bands[2].m; }
+    if(lat<0) merid = -merid;
+    const poleTaper = smoothstep(89, 80, a);
+    return {zonal: zonal*(0.3+0.7*poleTaper)*10, merid: merid*(0.3+0.7*poleTaper)*10};
+  }
+  function noise2(x,y){
+    return Math.sin(x*1.3+y*0.71) + 0.5*Math.sin(x*0.63-y*1.9+1.7) + 0.25*Math.sin(x*2.13+y*2.31+3.1);
+  }
+  function curlNoise(lon,lat,t){
+    const s = 0.028, eps = 0.6;
+    const x = lon*s + t*0.015, y = lat*s;
+    const pU1 = noise2(x, y+eps), pU2 = noise2(x, y-eps);
+    const pV1 = noise2(x+eps, y), pV2 = noise2(x-eps, y);
+    return { u: -(pU1-pU2)/(2*eps)*4, v: (pV1-pV2)/(2*eps)*4 };
+  }
+  let vortices = [];
+  function spawnVortex(){
+    return { lon: Math.random()*360-180, lat: (Math.random()*130-65), sign: Math.random()<0.5?1:-1,
+      strength: 0.6+Math.random()*0.9, radius: 12+Math.random()*10, life: 0, maxLife: 900+Math.random()*900 };
+  }
+  for(let i=0;i<6;i++) vortices.push(spawnVortex());
+  function stepVortices(){
+    for(let i=0;i<vortices.length;i++){
+      const v = vortices[i];
+      v.lon += 0.012 + v.sign*0.002;
+      v.lat += Math.sign(v.lat)*0.0015;
+      v.life++;
+      if(v.life > v.maxLife) vortices[i] = spawnVortex();
+    }
+  }
+  function vortexContribution(lon,lat){
+    let u=0,v=0;
+    for(const vx of vortices){
+      let dLon = lon - vx.lon;
+      if(dLon>180) dLon-=360; if(dLon<-180) dLon+=360;
+      const dLat = lat - vx.lat;
+      const r2 = dLon*dLon + dLat*dLat;
+      const falloff = Math.exp(-r2/(2*vx.radius*vx.radius));
+      u += -dLat*vx.sign*vx.strength*falloff*0.9;
+      v +=  dLon*vx.sign*vx.strength*falloff*0.9;
+    }
+    return {u,v};
+  }
+  function simulatedWindAt(lon, lat, t){
+    const b = bandWind(lat);
+    const c = curlNoise(lon,lat,t);
+    const vx = vortexContribution(lon,lat);
+    const u = b.zonal + (c.u*0.7 + vx.u)*2;
+    const v = b.merid + (c.v*0.7 + vx.v)*2;
+    return {u,v,speed:Math.sqrt(u*u+v*v)};
+  }
+
+  let windGrid = null;
+  let dataMode = 'simulated';
+  let lastUpdated = null;
+
+  async function fetchWindGrid(){
+    const lats = []; for(let la=-80; la<=80; la+=10) lats.push(la);
+    const lons = []; for(let lo=-180; lo<180; lo+=10) lons.push(lo);
+    const points = [];
+    for(const la of lats) for(const lo of lons) points.push([la,lo]);
+    const chunkSize = 100;
+    const chunks = [];
+    for(let i=0;i<points.length;i+=chunkSize) chunks.push(points.slice(i,i+chunkSize));
+
+    const chunkResults = await Promise.all(chunks.map(async (chunk)=>{
+      const latStr = chunk.map(p=>p[0].toFixed(2)).join(',');
+      const lonStr = chunk.map(p=>p[1].toFixed(2)).join(',');
+      const url = `https://api.open-meteo.com/v1/forecast?latitude=${latStr}&longitude=${lonStr}&current=wind_speed_10m,wind_direction_10m&wind_speed_unit=kn&timezone=UTC`;
+      const res = await fetch(url);
+      if(!res.ok) throw new Error('open-meteo http '+res.status);
+      const data = await res.json();
+      const arr = Array.isArray(data) ? data : [data];
+      return arr.map((d,idx)=>({ lat: chunk[idx][0], lon: chunk[idx][1],
+        speed: d.current.wind_speed_10m, dir: d.current.wind_direction_10m }));
+    }));
+
+    const flat = chunkResults.flat();
+    const grid = {};
+    for(const p of flat){
+      const dirRad = (p.dir||0) * Math.PI/180;
+      const u = -p.speed * Math.sin(dirRad);
+      const v = -p.speed * Math.cos(dirRad);
+      grid[p.lat+'|'+p.lon] = {u, v, speed: p.speed};
+    }
+    const table = lats.map(la => lons.map(lo => grid[la+'|'+lo] || {u:0,v:0,speed:0}));
+    return { lats, lons, table };
+  }
+
+  function bilinearWind(lon, lat){
+    const g = windGrid;
+    const lats = g.lats, lons = g.lons, table = g.table;
+    const clampedLat = Math.max(lats[0], Math.min(lats[lats.length-1], lat));
+    const latPos = (clampedLat - lats[0]) / 10;
+    const i0 = Math.min(Math.floor(latPos), lats.length-2);
+    const i1 = i0+1;
+    const fy = latPos - i0;
+
+    let lonNorm = ((lon+180) % 360 + 360) % 360;
+    const lonPos = lonNorm/10;
+    const j0 = Math.floor(lonPos) % lons.length;
+    const j1 = (j0+1) % lons.length;
+    const fx = lonPos - Math.floor(lonPos);
+
+    const a = table[i0][j0], b = table[i0][j1], c = table[i1][j0], d = table[i1][j1];
+    const u = lerp(lerp(a.u,b.u,fx), lerp(c.u,d.u,fx), fy);
+    const v = lerp(lerp(a.v,b.v,fx), lerp(c.v,d.v,fx), fy);
+    return {u, v, speed: Math.hypot(u,v)};
+  }
+
+  function windAt(lon, lat, t){
+    if(dataMode === 'live' && windGrid){
+      const base = bilinearWind(lon, lat);
+      const c = curlNoise(lon, lat, t);
+      return { u: base.u + c.u*0.35, v: base.v + c.v*0.35, speed: base.speed };
+    }
+    return simulatedWindAt(lon, lat, t);
+  }
+
+  function setStatus(mode, msg){
+    dataMode = mode;
+    statusEl.classList.toggle('live', mode==='live');
+    statusText.textContent = msg;
+  }
+
+  async function loadWindData(manual){
+    btnRefresh.disabled = true;
+    setStatus(dataMode==='live'?'live':'simulated', manual ? 'Refreshing…' : 'Fetching live wind grid…');
+    try{
+      const grid = await fetchWindGrid();
+      windGrid = grid;
+      lastUpdated = new Date();
+      const hh = String(lastUpdated.getUTCHours()).padStart(2,'0');
+      const mm = String(lastUpdated.getUTCMinutes()).padStart(2,'0');
+      setStatus('live', `Live · Open-Meteo · updated ${hh}:${mm} UTC`);
+    }catch(e){
+      setStatus('simulated', 'Simulated — live data unavailable');
+    }
+    btnRefresh.disabled = false;
+  }
+
+  function speedColor(spd){
+    const kt = spd;
+    const stops = [ [0,[79,195,201]], [10,[126,200,80]], [20,[232,197,71]], [30,[232,132,58]], [42,[232,84,78]] ];
+    let lo=stops[0], hi=stops[stops.length-1];
+    for(let i=0;i<stops.length-1;i++){
+      if(kt>=stops[i][0] && kt<=stops[i+1][0]){ lo=stops[i]; hi=stops[i+1]; break; }
+    }
+    const t = hi[0]===lo[0] ? 0 : (kt-lo[0])/(hi[0]-lo[0]);
+    const c = [0,1,2].map(k=>Math.round(lerp(lo[1][k],hi[1][k],Math.min(1,Math.max(0,t)))));
+    return `rgb(${c[0]},${c[1]},${c[2]})`;
+  }
+
+  const N_PARTICLES = 3200;
+  let particles = [];
+
+  function randomPointInView(){
+    const lon = Math.random()*360-180;
+    const lat = Math.asin(Math.random()*2-1)*180/Math.PI;
+    return {lon,lat};
+  }
+
+  function recomputeParticleScreens(hardReset){
+    if(hardReset || particles.length===0){
+      particles = [];
+      for(let i=0;i<N_PARTICLES;i++){
+        const p = randomPointInView();
+        const proj = projection([p.lon,p.lat]);
+        particles.push({ lon:p.lon, lat:p.lat, px: proj?proj[0]:null, py: proj?proj[1]:null, age: Math.floor(Math.random()*80) });
+      }
+    } else {
+      for(const p of particles){
+        const proj = projection([p.lon,p.lat]);
+        p.px = proj?proj[0]:null; p.py = proj?proj[1]:null;
+      }
+    }
+    windCtx.clearRect(0,0,W,H);
+  }
+
+  let tClock = 0;
+  function stepParticles(){
+    tClock += 1;
+    stepVortices();
+    windCtx.fillStyle = 'rgba(8,16,26,0.085)';
+    windCtx.fillRect(0,0,W,H);
+
+    const cx=translate[0], cy=translate[1], R = clipRadius();
+    windCtx.lineWidth = 1.05;
+
+    for(let i=0;i<particles.length;i++){
+      const p = particles[i];
+      const w = windAt(p.lon, p.lat, tClock);
+      const cosLat = Math.max(0.08, Math.cos(p.lat*Math.PI/180));
+      const speedScale = 0.012;
+      const dLon = (w.u/cosLat) * speedScale;
+      const dLat = (w.v) * speedScale;
+
+      let nlon = p.lon + dLon;
+      let nlat = p.lat + dLat;
+      if(nlat>89.5) nlat=89.5; if(nlat<-89.5) nlat=-89.5;
+      if(nlon>180) nlon-=360; if(nlon<-180) nlon+=360;
+
+      const proj = projection([nlon, nlat]);
+      p.age++;
+
+      const dxc = proj? proj[0]-cx : 9999, dyc = proj? proj[1]-cy: 9999;
+      const outside = !proj || (dxc*dxc+dyc*dyc) > R*R;
+
+      if(p.age > 260 || outside || p.px===null){
+        const np = randomPointInView();
+        const nproj = projection([np.lon, np.lat]);
+        particles[i] = { lon:np.lon, lat:np.lat, px: nproj?nproj[0]:null, py: nproj?nproj[1]:null, age:0 };
+        continue;
+      }
+
+      windCtx.strokeStyle = speedColor(w.speed);
+      windCtx.beginPath();
+      windCtx.moveTo(p.px, p.py);
+      windCtx.lineTo(proj[0], proj[1]);
+      windCtx.stroke();
+
+      p.lon = nlon; p.lat = nlat; p.px = proj[0]; p.py = proj[1];
+    }
+  }
+
+  let rafId = null;
+  function loop(){
+    if(!paused) stepParticles();
+    rafId = requestAnimationFrame(loop);
+  }
+
+  mapCanvas.style.pointerEvents = 'none';
+  windCanvas.style.pointerEvents = 'auto';
+
+  let dragMoved = false, dragStart = null;
+  windCanvas.addEventListener('pointerdown', (ev)=>{ dragStart=[ev.clientX,ev.clientY]; dragMoved=false; });
+  windCanvas.addEventListener('pointermove', (ev)=>{
+    if(dragStart){
+      const dx = ev.clientX-dragStart[0], dy = ev.clientY-dragStart[1];
+      if(Math.hypot(dx,dy) > 4) dragMoved = true;
+    }
+  });
+  windCanvas.addEventListener('click', (ev)=>{
+    if(dragMoved){ dragMoved=false; dragStart=null; return; }
+    dragStart=null;
+    const rect = windCanvas.getBoundingClientRect();
+    const x = ev.clientX - rect.left, y = ev.clientY - rect.top;
+    const inv = projection.invert([x,y]);
+    if(inv){
+      const [lon,lat] = inv;
+      if(isFinite(lon) && isFinite(lat)) setCenter(lon, lat, true);
+    }
+  });
+
+  windCanvas.addEventListener('wheel', (ev)=>{
+    ev.preventDefault();
+    const rect = windCanvas.getBoundingClientRect();
+    const mx = ev.clientX-rect.left, my = ev.clientY-rect.top;
+    const factor = ev.deltaY < 0 ? 1.12 : 1/1.12;
+    const newScale = Math.min(Math.max(currentScale*factor, fitScale*1), fitScale*10);
+    translate = [ mx - (mx-translate[0])*(newScale/currentScale), my - (my-translate[1])*(newScale/currentScale) ];
+    currentScale = newScale;
+    buildProjection();
+    drawBase();
+    recomputeParticleScreens(false);
+  }, {passive:false});
+
+  document.getElementById('btnHome').addEventListener('click', ()=>setCenter(-118.29, 33.735, false));
+  document.getElementById('btnPole').addEventListener('click', ()=>setCenter(0, 90, false));
+  document.getElementById('btnFit').addEventListener('click', ()=>{
+    currentScale = fitScale; translate=[W/2,H/2]; buildProjection(); drawBase(); recomputeParticleScreens(false);
+  });
+  btnRefresh.addEventListener('click', ()=>loadWindData(true));
+  const btnPause = document.getElementById('btnPause');
+  btnPause.addEventListener('click', ()=>{
+    paused = !paused;
+    btnPause.textContent = paused ? 'Resume' : 'Pause';
+    btnPause.classList.toggle('active', !paused);
+  });
+
+  window.addEventListener('resize', ()=>{ resize(); recomputeParticleScreens(true); });
+
+  async function boot(){
+    resize();
+    setCenter(centerLon, centerLat, false);
+    try{
+      const world = await d3.json('https://cdn.jsdelivr.net/npm/world-atlas@2/land-110m.json');
+      land = topojson.feature(world, world.objects.land);
+    }catch(e){ land = null; }
+    drawBase();
+    recomputeParticleScreens(true);
+    loading.style.display = 'none';
+    loop();
+    await loadWindData(false);
+    setInterval(()=>loadWindData(false), 20*60*1000);
+  }
+  boot();
+})();
+</script>
+</body>
+</html>
